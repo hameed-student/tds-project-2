@@ -20,11 +20,11 @@ import argparse
 import chardet
 
 # Set the AIPROXY_TOKEN environment variable if not already set
-if "AIPROXY_TOKEN" not in os.environ:
+if "AI_PROXY" not in os.environ:
     api_key = input("Please enter your OpenAI API key: ")
-    os.environ["AIPROXY_TOKEN"] = api_key
+    os.environ["AI_PROXY"] = api_key
 
-api_key = os.environ["AIPROXY_TOKEN"]
+api_key = os.environ["AI_PROXY"]
 API_BASE = "https://aiproxy.sanand.workers.dev/openai/v1"
 
 # Function to detect file encoding
