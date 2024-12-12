@@ -196,12 +196,9 @@ def write_readme(story, visualizations, filename):
             f.write(f"![{img}]({img})\n")
 
 # Main function
-def main():
-    parser = argparse.ArgumentParser(description="Automated Dataset Analysis")
-    parser.add_argument("csv_filename", help="Path to the CSV file to analyze")
-    args = parser.parse_args()
-
-    df = load_and_clean_data(args.csv_filename)
+def main(fname):
+    
+    df = load_and_clean_data(fname)
     summary = summarize_data(df)
     outliers = detect_outliers(df)
     correlation_matrix = correlation_analysis(df)
@@ -213,4 +210,4 @@ def main():
     print("Analysis complete. Results saved in README.md.")
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1])
