@@ -206,7 +206,7 @@ def main(fname):
     df = perform_pca(df)
     visualizations = create_visualizations(df)  # Capture visualizations here
     story = generate_analysis_story(summary, outliers, correlation_matrix)
-    write_readme(story, visualizations, args.csv_filename)  # Pass visualizations
+    write_readme(story, visualizations, fname)  # Pass visualizations
     print("Analysis complete. Results saved in README.md.")
 
 if __name__ == "__main__":
