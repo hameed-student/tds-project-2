@@ -1,297 +1,216 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["numpy", "pandas", "scikit-learn", "chardet", "requests", "seaborn", "matplotlib", "python-dotenv"]
+# dependencies = ["numpy", "pandas", "scikit-learn", "chardet", "requests", "seaborn", "matplotlib", "python-dotenv", "missingno"]
 # ///
+
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
 import os
 import sys
-import json
-import base64
-import chardet
 import requests
-import subprocess
-import pandas as pd
-import seaborn as sns
-from dotenv import load_dotenv
-import matplotlib.pyplot as plt
-from sklearn.cluster import KMeans
-from sklearn.impute import SimpleImputer
+from datetime import datetime
 from sklearn.preprocessing import StandardScaler
-from PIL import Image
-import tempfile
+from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
+from scipy.stats import zscore
+import missingno as msno
+import argparse
+import chardet
 
-class DataAnalyzer:
-    """
-    A class for comprehensive data analysis, visualization, and narrative generation
-    using external APIs and standard Python libraries.
-    """
+# Set the AIPROXY_TOKEN environment variable if not already set
+if "AIPROXY_TOKEN" not in os.environ:
+    api_key = input("Please enter your OpenAI API key: ")
+    os.environ["AIPROXY_TOKEN"] = api_key
 
-    def __init__(self, dataset_path, api_key):
-        """Initialize the DataAnalyzer with the dataset path and API key."""
-        self.dataset_path = dataset_path
-        self.api_key = api_key
-        self.df = None
-        self.headers_json = None
-        self.profile = None
-        self.output_dir = os.getcwd()
-        self.ensure_output_dir()
+api_key = os.environ["AIPROXY_TOKEN"]
+API_BASE = "https://aiproxy.sanand.workers.dev/openai/v1"
 
-    def ensure_output_dir(self):
-        """Ensure the output directory exists."""
-        os.makedirs(self.output_dir, exist_ok=True)
-
-    def read_data(self):
-        """Load the dataset and detect its encoding."""
-        try:
-            with open(self.dataset_path, 'rb') as file:
-                result = chardet.detect(file.read())
-                encoding = result['encoding']
-
-            self.df = pd.read_csv(self.dataset_path, encoding=encoding)
-            if self.df is None or self.df.empty:
-                sys.exit("Dataset is empty or could not be loaded.")
-        except Exception as e:
-            print(f"Error loading dataset: {e}")
-            sys.exit(1)
-
-    def extract_headers(self):
-        """Extract and store the dataset headers as JSON."""
-        self.headers_json = json.dumps({"headers": self.df.columns.tolist()})
-
-    def create_profile(self):
-        """Create a detailed profile of the dataset."""
-        self.profile = {
-            "shape": self.df.shape,
-            "missing_values": self.df.isnull().sum().to_dict(),
-            "data_types": self.df.dtypes.apply(str).to_dict(),
-            "numeric_summary": self.df.describe().to_dict(),
-            "headers": self.headers_json,
-            "sample_data": self.df.head(3).to_dict()
-        }
-
-    def generate_visualization(self, kind):
-        """Generate visualizations (scatter plot or heatmap) based on dataset analysis."""
-        try:
-            if kind == "scatter":
-                self.generate_scatter_plot()
-            elif kind == "heatmap":
-                self.generate_correlation_heatmap()
-            elif kind == "cluster":
-                self.generate_cluster_plot()
-        except Exception as e:
-            print(f"Error generating {kind}: {e}")
-
-    def generate_scatter_plot(self):
-        """Generate a scatter plot based on API-selected columns."""
-        # Improved error handling and efficiency for column selection
-        try:
-            selected_columns = self.get_suggested_columns("scatter")
-            if len(selected_columns) != 2:
-                return
-
-            x_col, y_col = selected_columns
-            if not pd.api.types.is_numeric_dtype(self.df[x_col]) or not pd.api.types.is_numeric_dtype(self.df[y_col]):
-                return
-
-            self.df[[x_col, y_col]] = self.df[[x_col, y_col]].apply(pd.to_numeric, errors='coerce')
-            df_clean = self.df.dropna(subset=[x_col, y_col])
-            if df_clean.empty:
-                return
-
-            plt.figure(figsize=(8, 6))
-            sns.scatterplot(data=df_clean, x=x_col, y=y_col)
-            plt.title(f'Scatterplot between {x_col} and {y_col}')
-            plt.xlabel(x_col)
-            plt.ylabel(y_col)
-
-            
-            plt.savefig('scatterplot.png', dpi=100, bbox_inches='tight')
-            plt.close()
-        except Exception as e:
-            print(f"Scatter plot generation failed: {e}")
+# Function to detect file encoding
+def detect_encoding(filename):
+    with open(filename, 'rb') as f:
+        raw_data = f.read()
+    result = chardet.detect(raw_data)
     
-    def generate_cluster_plot(self):
-        """Generate a cluster plot based on API-selected columns."""
-        try:
-            # Select columns for clustering
-            selected_columns = self.get_suggested_columns("cluster")
-            if len(selected_columns) < 2:
-                return
+    # Handle UTF-16 without BOM
+    if result['encoding'] == 'UTF-16' and not raw_data.startswith(b'\xff\xfe') and not raw_data.startswith(b'\xfe\xff'):
+        result['encoding'] = 'utf-16'  # Assume UTF-16 if BOM is missing
+    
+    return result['encoding']
 
-            # Ensure selected columns are numeric
-            numeric_cols = [col for col in selected_columns if pd.api.types.is_numeric_dtype(self.df[col])]
-            if len(numeric_cols) < 2:
-                return
+def load_and_clean_data(filename):
+    try:
+        encoding = detect_encoding(filename)
+        df = pd.read_csv(filename, encoding=encoding)
 
-            # Prepare the data
-            df_clean = self.df[numeric_cols].apply(pd.to_numeric, errors='coerce').dropna()
-            if df_clean.empty:
-                return
+        # Drop rows with all NaN values
+        df.dropna(axis=0, how='all', inplace=True)
 
-            # Standardize the features
-            scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(df_clean)
+        # Fill missing values in numeric columns with the mean of the column
+        numeric_columns = df.select_dtypes(include='number')
+        df[numeric_columns.columns] = numeric_columns.fillna(numeric_columns.mean())
 
-            # Perform K-means clustering (use 3 clusters by default)
-            kmeans = KMeans(n_clusters=3, random_state=42)
-            df_clean['Cluster'] = kmeans.fit_predict(X_scaled)
+        # Handle missing values in non-numeric columns (e.g., fill with 'Unknown')
+        non_numeric_columns = df.select_dtypes(exclude='number')
+        df[non_numeric_columns.columns] = non_numeric_columns.fillna('Unknown')
 
-            # Create the cluster plot
-            plt.figure(figsize=(10, 8))
-            
-            # If more than 2 columns, use first two for visualization
-            scatter = sns.scatterplot(
-                data=df_clean, 
-                x=numeric_cols[0], 
-                y=numeric_cols[1], 
-                hue='Cluster', 
-                palette='viridis'
-            )
+        return df
 
-            plt.title(f'Cluster Plot of {numeric_cols[0]} vs {numeric_cols[1]}')
-            plt.xlabel(numeric_cols[0])
-            plt.ylabel(numeric_cols[1])
+    except UnicodeDecodeError as e:
+        print(f"Error: Could not decode the file. Ensure it is properly encoded. Details: {e}")
+        sys.exit(1)
 
-            plt.savefig('cluster_plot.png', dpi=100, bbox_inches='tight')
+
+# Function to summarize the dataset
+def summarize_data(df):
+    summary = {
+        'shape': df.shape,
+        'columns': df.columns.tolist(),
+        'types': df.dtypes.to_dict(),
+        'descriptive_statistics': df.describe().to_dict(),
+        'missing_values': df.isnull().sum().to_dict()
+    }
+    return summary
+
+# Outlier detection function using Z-Score
+def detect_outliers(df):
+    numeric_df = df.select_dtypes(include=[np.number])
+    z_scores = np.abs(zscore(numeric_df))
+    outliers = (z_scores > 3).sum(axis=0)
+    outlier_info = {
+        column: int(count) for column, count in zip(numeric_df.columns, outliers)
+    }
+    return outlier_info
+
+# Correlation analysis function
+def correlation_analysis(df):
+    numeric_df = df.select_dtypes(include='number')
+    correlation_matrix = numeric_df.corr()
+    return correlation_matrix.to_dict()
+
+# Cluster analysis using KMeans
+def perform_clustering(df, n_clusters=3):
+    scaler = StandardScaler()
+    df_scaled = scaler.fit_transform(df.select_dtypes(include=[np.number]))
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+    df['Cluster'] = kmeans.fit_predict(df_scaled)
+    return df, kmeans
+
+# PCA for dimensionality reduction (optional)
+def perform_pca(df):
+    scaler = StandardScaler()
+    df_scaled = scaler.fit_transform(df.select_dtypes(include=[np.number]))
+    pca = PCA(n_components=2)
+    pca_components = pca.fit_transform(df_scaled)
+    df['PCA1'] = pca_components[:, 0]
+    df['PCA2'] = pca_components[:, 1]
+    return df
+
+# Function to create visualizations
+def create_visualizations(df):
+    visualizations = []  # Initialize an empty list to store image paths
+
+    # Visualization for missing data
+    try:
+        msno.matrix(df)
+        missing_img = 'missing_data.png'
+        plt.savefig(missing_img, dpi=100)  # Low resolution
+        plt.close()
+        visualizations.append(missing_img)
+    except Exception as e:
+        print(f"Failed to generate missing data visualization: {e}")
+
+    # Correlation heatmap
+    try:
+        numeric_df = df.select_dtypes(include='number')
+        if numeric_df.shape[1] > 1:
+            plt.figure(figsize=(10, 6), constrained_layout=True)
+            sns.heatmap(numeric_df.corr(), annot=True, cmap='coolwarm', fmt='.2f')
+            plt.title("Correlation Matrix")
+            correlation_img = 'correlation_matrix.png'
+            plt.savefig(correlation_img, dpi=100)  # Low resolution
             plt.close()
+            visualizations.append(correlation_img)
+    except Exception as e:
+        print(f"Failed to generate correlation heatmap: {e}")
 
-        except Exception as e:
-            print(f"Cluster plot generation failed: {e}")
-
-    def generate_correlation_heatmap(self):
-        """Generate a correlation heatmap."""
-        try:
-            num_df = self.df.select_dtypes(include=['number'])
-            if num_df.shape[1] < 2:
-                return
-
-            corr_matrix = num_df.corr()
-            plt.figure(figsize=(10, 8))
-            sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', fmt=".2f", linewidths=0.5)
-            plt.title('Correlation Heatmap')
-
-            
-            plt.savefig('correlation_heatmap.png', dpi=100, bbox_inches='tight')
+    # Cluster visualization (after performing PCA)
+    try:
+        if 'PCA1' in df.columns and 'Cluster' in df.columns:
+            plt.figure(figsize=(8, 6), constrained_layout=True)
+            sns.scatterplot(x='PCA1', y='PCA2', hue='Cluster', data=df, palette='Set1')
+            plt.title("Cluster Analysis (PCA)")
+            cluster_img = 'cluster_analysis.png'
+            plt.savefig(cluster_img, dpi=100)  # Low resolution
             plt.close()
-        except Exception as e:
-            print(f"Correlation heatmap generation failed: {e}")
+            visualizations.append(cluster_img)
+    except Exception as e:
+        print(f"Failed to generate cluster analysis visualization: {e}")
 
-    def get_suggested_columns(self, analysis_type):
-        """Fetch suggested columns for analysis via API."""
-        prompt_map = {
-            "scatter": "Which 2 numeric columns are suitable for scatterplot? provide exactly 2 Your response should be a comma-separated list of column names only. the column names should be exactly as they appear in the dataset. return empty string if no columns are suitable for scatter plot..",
-            "cluster": "Which numeric columns are suitable for clustering? Provide up to 5. Your response should be a comma-separated list of column names only. the column names should be exactly as they appear in the dataset. return empty string if no columns are suitable for clustering."}
+    return visualizations  # Always return the list, even if empty
 
-        try:
-            response = requests.post(
-                "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json={
-                    "model": "gpt-4o-mini",
-                    "messages": [
-                        {"role": "system", "content": prompt_map[analysis_type]},
-                        {"role": "user", "content": str(self.profile)}
-                    ]
-                }
-            )
-            response_data = response.json()
-            columns = response_data['choices'][0]['message']['content'].split(',')
-            print(columns)
-            return [col.strip() for col in columns if col.strip()]
-        except Exception as e:
-            print(f"Error fetching {analysis_type} columns: {e}")
-            return []
 
-    def generate_readme(self):
-        """Generate a README.md file containing narratives for visualizations."""
-        try:
-            image_files = [f for f in os.listdir(self.output_dir) if f.endswith('.png')]
-            if not image_files:
-                return
+# Function to generate GPT-4o-Mini analysis story
+def generate_analysis_story(summary, outliers, correlation_matrix):
+    prompt = f"""
+    Given the following dataset summary:
+    - Shape: {summary['shape']}
+    - Columns: {', '.join(summary['columns'])}
+    - Data Types: {summary['types']}
+    - Descriptive Statistics: {summary['descriptive_statistics']}
+    - Missing values: {summary['missing_values']}
 
-            readme_content = "# Data Analysis Visualizations\n\n"
+    Additionally, the outliers detected are: {outliers}
 
-            for image in image_files:
-                image_path = os.path.join(self.output_dir, image)
-                story = self.get_image_story(image_path)
-                if story:
-                    readme_content += f"## {os.path.splitext(image)[0]}\n\n" \
-                                      f"![{image}](./{image})\n\n{story}\n\n"
+    The correlation matrix of the dataset is:
+    {correlation_matrix}
 
-            with open(os.path.join(self.output_dir, "README.md"), "w", encoding="utf-8") as readme_file:
-                readme_file.write(readme_content)
-        except Exception as e:
-            print(f"README generation failed: {e}")
+    Generate a detailed, insightful analysis of the dataset. Include an interpretation of the statistics, correlations, outliers, and any recommendations for further analysis. Additionally, narrate the findings in a story-like manner to convey the insights effectively.
+    """
 
-    def get_image_story(self, image_path):
-        """Generate a narrative based on the image."""
-        try:
-            base64_img = self.compress_image(image_path)
-            
+    headers = {
+        "Authorization": f"Bearer {api_key}"
+    }
+    response = requests.post(
+        f"{API_BASE}/chat/completions",
+        headers=headers,
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 1000,  # Low token count to reduce cost
+        }
+    )
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]["content"]
 
-            response = requests.post(
-                "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": "gpt-4o-mini",
-                    "messages": [
-                        {"role": "system", "content": "Create a narrative based on this visualization."},
-                        {
-                            "role": "user", 
-                            "content": [
-                                {"type": "text", "text": "Describe this visualization"},
-                                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_img}"}}
-                            ]
-                        }
-                    ]
-                }
-            )
-            result = response.json()
-            return result['choices'][0]['message']['content']
-        except Exception as e:
-            print(f"Failed to generate story: {e}")
-            return ""
+# Function to write the README
 
-    def compress_image(self,image_path, max_size=(800, 800), quality=85):
-        """
-    Compress an image while maintaining aspect ratio
-"""
-        with Image.open(image_path) as img:
-            # Resize image if it's larger than max_size
-            img.thumbnail(max_size, Image.LANCZOS)
-            
-            # Use a temporary file to handle the buffer
-            with tempfile.NamedTemporaryFile(delete=True, suffix='.png') as temp_file:
-                img.save(temp_file.name, format="PNG", optimize=True, quality=quality)
-                
-                # Read the file contents and encode
-                with open(temp_file.name, 'rb') as f:
-                    return base64.b64encode(f.read()).decode('utf-8')
+def write_readme(story, visualizations, filename):
+    with open('README.md', 'w') as f:
+        f.write(f"# Dataset Analysis of {filename}\n")
+        f.write("\n## Dataset Analysis Story\n")
+        f.write(f"{story}\n")
+        f.write("\n## Visualizations\n")
+        for img in visualizations:
+            f.write(f"![{img}]({img})\n")
+
+# Main function
+def main():
+    parser = argparse.ArgumentParser(description="Automated Dataset Analysis")
+    parser.add_argument("csv_filename", help="Path to the CSV file to analyze")
+    args = parser.parse_args()
+
+    df = load_and_clean_data(args.csv_filename)
+    summary = summarize_data(df)
+    outliers = detect_outliers(df)
+    correlation_matrix = correlation_analysis(df)
+    df, _ = perform_clustering(df)
+    df = perform_pca(df)
+    visualizations = create_visualizations(df)  # Capture visualizations here
+    story = generate_analysis_story(summary, outliers, correlation_matrix)
+    write_readme(story, visualizations, args.csv_filename)  # Pass visualizations
+    print("Analysis complete. Results saved in README.md.")
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python autolysis.py <dataset_path>")
-        sys.exit(1)
-
-    load_dotenv()
-    try:
-        api_key = os.environ["AI_PROXY"]
-    except KeyError:
-        print("AIPROXY_TOKEN environment variable not set.")
-        sys.exit(1)
-
-    for dataset_file in sys.argv[1:]:
-        print(f"Processing {dataset_file}...")
-        
-        analyzer = DataAnalyzer(dataset_file, api_key)
-        analyzer.read_data()
-        analyzer.extract_headers()
-        analyzer.create_profile()
-        analyzer.generate_visualization("scatter")
-        analyzer.generate_visualization("cluster")
-        analyzer.generate_visualization("heatmap")
-        analyzer.generate_readme()
-
-
+    main()
