@@ -256,10 +256,8 @@ class DataAnalyzer:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python script.py <dataset.csv>")
+        print("Usage: started")
         sys.exit(1)
-
-    dataset_file = sys.argv[1]
 
     try:
         load_dotenv()
@@ -267,11 +265,17 @@ if __name__ == "__main__":
     except KeyError:
         raise ValueError("AIPROXY_TOKEN environment variable not set.")
 
-    analyzer = DataAnalyzer(dataset_file, api_key)
-    analyzer.read_data()
-    analyzer.extract_headers()
-    analyzer.create_profile()
-    analyzer.generate_scatter_plot()
-    analyzer.generate_correlation_heatmap()
-    analyzer.generate_cluster_plot()
-    analyzer.generate_readme()
+    # Process each dataset file provided as an argument
+    for dataset_file in sys.argv[1:]:
+        print(f"Processing {dataset_file}")
+        
+        analyzer = DataAnalyzer(dataset_file, api_key)
+        analyzer.read_data()
+        analyzer.extract_headers()
+        analyzer.create_profile()
+        analyzer.generate_scatter_plot()
+        analyzer.generate_correlation_heatmap()
+        analyzer.generate_cluster_plot()
+        analyzer.generate_readme()
+
+        print(f"Finished processing {dataset_file}\n")
