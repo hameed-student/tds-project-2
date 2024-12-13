@@ -38,7 +38,7 @@ def get_api_details():
     """
     Retrieves the AI Proxy token and sets the API endpoint URL.
     """
-    api_proxy_token = os.getenv("AI_PROXY")
+    api_proxy_token = os.getenv("AIPROXY_TOKEN")
     if not api_proxy_token:
         logging.error("AIPROXY_TOKEN environment variable not set.")
         print("Error: AIPROXY_TOKEN environment variable not set.")
